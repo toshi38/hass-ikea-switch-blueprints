@@ -1,0 +1,166 @@
+blueprint:
+  name: IKEA Styrbar 4-Button Switch (Up/Down + Left/Right)
+  description: >
+    Controls two lights or light groups using the IKEA Styrbar remote.
+    - Up/Down: on/off and brighten/dim (binding-like)
+    - Left/Right: scene-based press/hold mapped to on/off and dimming
+  domain: automation
+  input:
+    remote:
+      name: Styrbar Remote
+      description: The IKEA Styrbar remote device.
+      selector:
+        device:
+          integration: zha
+    up_down_light:
+      name: Up/Down Light or Group
+      description: Light or group controlled by up/down buttons.
+      selector:
+        entity:
+          domain: light
+    left_right_light:
+      name: Left/Right Light or Group
+      description: Light or group controlled by left/right buttons.
+      selector:
+        entity:
+          domain: light
+
+mode: restart
+
+trigger:
+  - platform: event
+    event_type: zha_event
+    event_data:
+      device_id: !input remote
+
+variables:
+  command: "{{ trigger.event.data.command }}"
+  cluster_id: "{{ trigger.event.data.cluster_id }}"
+  args: "{{ trigger.event.data.args }}"
+  up_down_light: !input up_down_light
+  left_right_light: !input left_right_light
+
+action:
+  - choose:
+      # Up/Down button logic (Cluster 6/8)
+      - conditions:
+          - condition: template
+            value_template: "{{ cluster_id in [6, 8] }}"
+        sequence:
+          - choose:
+              # Short press up = turn on
+              - conditions:
+                  - condition: template
+                    value_template: "{{ command == 'on' }}"
+                sequence:
+                  - service: light.turn_on
+                    target:
+                      entity_id: "{{ up_down_light }}"
+              # Short press down = turn off
+              - conditions:
+                  - condition: template
+                    value_template: "{{ command == 'off' }}"
+                sequence:
+                  - service: light.turn_off
+                    target:
+                      entity_id: "{{ up_down_light }}"
+              # Long press up = brighten repeatedly
+              - conditions:
+                  - condition: template
+                    value_template: "{{ command == 'move_with_on_off' }}"
+                sequence:
+                  - repeat:
+                      until:
+                        - condition: template
+                          value_template: "{{ trigger.event.data.command == 'stop_with_on_off' }}"
+                      sequence:
+                        - service: light.turn_on
+                          data:
+                            entity_id: "{{ up_down_light }}"
+                            brightness_step_pct: 10
+                        - delay:
+                            milliseconds: 300
+              # Long press down = dim repeatedly
+              - conditions:
+                  - condition: template
+                    value_template: "{{ command == 'move' }}"
+                sequence:
+                  - repeat:
+                      until:
+                        - condition: template
+                          value_template: "{{ trigger.event.data.command == 'stop' }}"
+                      sequence:
+                        - service: light.turn_on
+                          data:
+                            entity_id: "{{ up_down_light }}"
+                            brightness_step_pct: -10
+                        - delay:
+                            milliseconds: 300
+              # Release: stop dimming (no action required; loop will exit)
+              - conditions:
+                  - condition: template
+                    value_template: "{{ command in ['stop_with_on_off', 'stop'] }}"
+                sequence: []
+
+      # Left/Right button logic (Cluster 5, Scene commands)
+      - conditions:
+          - condition: template
+            value_template: "{{ cluster_id == 5 }}"
+        sequence:
+          - choose:
+              # Right turn on
+              - conditions:
+                  - condition: template
+                    value_template: "{{ command == 'press' and args[0] == 256 }}"
+                sequence:
+                  - service: light.turn_on
+                    target:
+                      entity_id: "{{ left_right_light }}"
+
+              # Left turn off
+              - conditions:
+                  - condition: template
+                    value_template: "{{ command == 'press' and args[0] == 257 }}"
+                sequence:
+                  - service: light.turn_off
+                    target:
+                      entity_id: "{{ left_right_light }}"
+
+              # ✅ Right long press (args[0] == 3328) → brighten
+              - conditions:
+                  - condition: template
+                    value_template: "{{ command == 'hold' and args[0] == 3328 }}"
+                sequence:
+                  - repeat:
+                      until:
+                        - condition: template
+                          value_template: "{{ trigger.event.data.command == 'release' }}"
+                      sequence:
+                        - service: light.turn_on
+                          data:
+                            entity_id: "{{ left_right_light }}"
+                            brightness_step_pct: 10
+                        - delay:
+                            milliseconds: 300
+                            
+              # ✅ Left long press (args[0] == 3329) → dim
+              - conditions:
+                  - condition: template
+                    value_template: "{{ command == 'hold' and args[0] == 3329 }}"
+                sequence:
+                  - repeat:
+                      until:
+                        - condition: template
+                          value_template: "{{ trigger.event.data.command == 'release' }}"
+                      sequence:
+                        - service: light.turn_on
+                          data:
+                            entity_id: "{{ left_right_light }}"
+                            brightness_step_pct: -10
+                        - delay:
+                            milliseconds: 300
+              # Release → stop (loop ends automatically)
+              - conditions:
+                  - condition: template
+                    value_template: "{{ command == 'release' }}"
+                sequence: []
